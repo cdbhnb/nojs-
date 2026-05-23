@@ -17,10 +17,23 @@ import socket
 import json
 import subprocess
 import traceback
+import shutil
 from cms_core.main import app
 
 frontend_process = None
 WINDOW_CONFIG_FILE = os.path.join(EXE_DIR, 'window_config.json')
+FRONTEND_LOG_FILE = os.path.join(EXE_DIR, 'frontend-start.log')
+
+def find_executable(names, extra_paths=None):
+    extra_paths = extra_paths or []
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return found
+    for path in extra_paths:
+        if os.path.exists(path):
+            return path
+    return None
 
 def release_port(port):
     try:
@@ -117,18 +130,56 @@ if __name__ == "__main__":
     env_vars = os.environ.copy()
     env_vars["PORT"] = str(frontend_port)
 
+    node_exe = find_executable(
+        ["node.exe", "node"],
+        [
+            r"C:\Program Files\nodejs\node.exe",
+            r"C:\Program Files (x86)\nodejs\node.exe",
+        ],
+    )
+    npm_exe = find_executable(
+        ["npm.cmd", "npm"],
+        [
+            r"C:\Program Files\nodejs\npm.cmd",
+            r"C:\Program Files (x86)\nodejs\npm.cmd",
+        ],
+    )
+
+    if node_exe:
+        node_dir = os.path.dirname(node_exe)
+        env_vars["PATH"] = node_dir + os.pathsep + env_vars.get("PATH", "")
+
     standalone_dir = os.path.join(BASE_DIR, '.next', 'standalone')
     server_js = os.path.join(standalone_dir, 'server.js')
+    frontend_log = open(FRONTEND_LOG_FILE, 'w', encoding='utf-8', errors='ignore')
 
     # 🌟 核心自适应逻辑：判断是“打包运行”还是“开发运行”
     if os.path.exists(server_js):
         print("🚀 [生产模式] 使用 127.0.0.1 强制同步...")
+        if not node_exe:
+            print("❌ 未找到 node.exe，无法启动生产前端。")
+            sys.exit(1)
         env_vars["HOSTNAME"] = "127.0.0.1"
-        frontend_process = subprocess.Popen(["node", "server.js"], cwd=standalone_dir, env=env_vars, shell=True)
+        frontend_process = subprocess.Popen(
+            [node_exe, "server.js"],
+            cwd=standalone_dir,
+            env=env_vars,
+            stdout=frontend_log,
+            stderr=subprocess.STDOUT,
+        )
         window_url = f"http://127.0.0.1:{frontend_port}"
     else:
         print("🛠️ [开发模式] 使用 localhost 保持兼容...")
-        frontend_process = subprocess.Popen("npm run dev", shell=True, cwd=BASE_DIR, env=env_vars)
+        if not npm_exe:
+            print("❌ 未找到 npm.cmd，无法启动开发前端。")
+            sys.exit(1)
+        frontend_process = subprocess.Popen(
+            [npm_exe, "run", "dev"],
+            cwd=BASE_DIR,
+            env=env_vars,
+            stdout=frontend_log,
+            stderr=subprocess.STDOUT,
+        )
         window_url = f"http://localhost:{frontend_port}"
 
     write_port_config(backend_port)
@@ -136,6 +187,7 @@ if __name__ == "__main__":
 
     if not wait_for_port(backend_port) or not wait_for_port(frontend_port):
         print(">>> ❌ 前后端启动失败！")
+        print(f">>> 前端启动日志：{FRONTEND_LOG_FILE}")
         on_closed()
         sys.exit(1)
 
